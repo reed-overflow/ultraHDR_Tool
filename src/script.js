@@ -10,6 +10,14 @@ const brushSizeInput = document.getElementById('brush-size');
 const sizeValue = document.getElementById('size-value');
 const opacityInput = document.getElementById('opacity');
 const opacityValue = document.getElementById('opacity-value');
+const autoThresholdInput = document.getElementById('auto-threshold');
+const autoThresholdValue = document.getElementById('auto-threshold-value');
+const autoThresholdMin = document.getElementById('auto-threshold-min');
+const autoThresholdMax = document.getElementById('auto-threshold-max');
+const autoThresholdPreview = document.getElementById('auto-threshold-preview');
+const autoBrightMaskBtn = document.getElementById('auto-bright-mask-btn');
+const autoBrightPercentMaskBtn = document.getElementById('auto-bright-percent-mask-btn');
+const autoDarkMaskBtn = document.getElementById('auto-dark-mask-btn');
 const brushBtn = document.getElementById('brush-btn');
 const eraserBtn = document.getElementById('eraser-btn');
 const moveBtn = document.getElementById('move-btn');
@@ -32,6 +40,8 @@ const previewStatus = document.getElementById('ultrahdr-preview-status');
 const livePreviewToggle = document.getElementById('live-preview-toggle');
 const refreshPreviewBtn = document.getElementById('refresh-preview-btn');
 
+const autoThresholdPreviewCtx = autoThresholdPreview.getContext('2d');
+
 // 获取Canvas上下文
 const ctx = canvas.getContext('2d');
 
@@ -46,6 +56,9 @@ let redoStack = [];
 const historyLimit = 20;
 let previewUpdateTimer = null;
 let previewRequestToken = 0;
+let autoThresholdPreviewTimer = null;
+let autoThresholdPreviewToken = 0;
+let autoBrightnessStats = null;
 let originalImageRatio = 1;
 let displayBaseWidth = 0;
 let displayBaseHeight = 0;
@@ -60,8 +73,15 @@ function init() {
     // 设置画笔大小和不透明度显示
     sizeValue.textContent = brushSizeInput.value;
     opacityValue.textContent = opacityInput.value;
+    autoThresholdValue.textContent = autoThresholdInput.value;
     updateToolButtons();
     updateHistoryButtons();
+    autoThresholdInput.disabled = true;
+    autoBrightMaskBtn.disabled = true;
+    autoBrightPercentMaskBtn.disabled = true;
+    autoDarkMaskBtn.disabled = true;
+    setAutoThresholdRange(0, 255, Number(autoThresholdInput.value));
+    clearAutoThresholdPreview('上传图片后，这里会显示阈值二分预览。');
 
     // 监听文件上传
     fileInput.addEventListener('change', handleFileUpload);
@@ -75,6 +95,11 @@ function init() {
         opacityValue.textContent = opacityInput.value;
     });
 
+    autoThresholdInput.addEventListener('input', () => {
+        autoThresholdValue.textContent = autoThresholdInput.value;
+        scheduleAutoThresholdPreview();
+    });
+
     brushBtn.addEventListener('click', () => setActiveTool('brush'));
     eraserBtn.addEventListener('click', () => setActiveTool('eraser'));
     moveBtn.addEventListener('click', () => setActiveTool('move'));
@@ -85,6 +110,9 @@ function init() {
     zoomInBtn.addEventListener('click', () => setZoomLevel(zoomLevel + 0.2));
     zoomLevelInput.addEventListener('input', () => setZoomLevel(Number(zoomLevelInput.value) / 100, true));
     refreshPreviewBtn.addEventListener('click', () => triggerManualPreviewUpdate());
+    autoBrightMaskBtn.addEventListener('click', () => applyAutoMask('bright'));
+    autoBrightPercentMaskBtn.addEventListener('click', () => applyAutoMask('bright-percent'));
+    autoDarkMaskBtn.addEventListener('click', () => applyAutoMask('dark'));
     livePreviewToggle.addEventListener('change', () => {
         previewStatus.textContent = livePreviewToggle.checked
             ? '已开启实时更新预览。'
@@ -139,10 +167,21 @@ function handleFileUpload(event) {
         img.onload = function() {
             // 保存当前图片引用
             currentImage = img;
+            autoBrightnessStats = analyzeImageBrightness(img);
+            autoThresholdPreviewToken++;
 
             zoomLevel = 1;
             zoomLevelInput.value = '100';
             zoomValue.textContent = '100';
+            setAutoThresholdRange(
+                autoBrightnessStats.lowerBound,
+                autoBrightnessStats.upperBound,
+                autoBrightnessStats.defaultThreshold
+            );
+            autoThresholdInput.disabled = false;
+            autoBrightMaskBtn.disabled = false;
+            autoBrightPercentMaskBtn.disabled = false;
+            autoDarkMaskBtn.disabled = false;
 
             // 设置Canvas尺寸
             setCanvasSize(img.width, img.height);
@@ -157,6 +196,7 @@ function handleFileUpload(event) {
             redoStack = [];
             setActiveTool('brush');
             updateHistoryButtons();
+            scheduleAutoThresholdPreview();
             setPreviewEmptyState('已上传图片，开始绘制遮罩后将显示当前 UltraHDR 预览。');
             if (livePreviewToggle.checked) {
                 schedulePreviewUpdate(true);
@@ -243,6 +283,281 @@ function createMaskCanvas() {
     // 填充白色背景
     maskCtx.fillStyle = 'white';
     maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+}
+
+function setAutoThresholdRange(minValue, maxValue, value) {
+    const roundedMin = Math.max(0, Math.min(255, Math.round(minValue)));
+    const roundedMax = Math.max(0, Math.min(255, Math.round(maxValue)));
+    const boundedValue = Math.max(roundedMin, Math.min(roundedMax, Math.round(value)));
+
+    autoThresholdInput.min = String(roundedMin);
+    autoThresholdInput.max = String(roundedMax);
+    autoThresholdInput.value = String(boundedValue);
+    autoThresholdValue.textContent = String(boundedValue);
+    autoThresholdMin.textContent = '最小值 ' + roundedMin;
+    autoThresholdMax.textContent = '最大值 ' + roundedMax;
+}
+
+function clearAutoThresholdPreview(message) {
+    autoThresholdPreview.width = 1;
+    autoThresholdPreview.height = 1;
+    autoThresholdPreviewCtx.fillStyle = '#111';
+    autoThresholdPreviewCtx.fillRect(0, 0, 1, 1);
+    autoThresholdPreview.style.aspectRatio = '1 / 1';
+    if (message) {
+        autoThresholdMin.textContent = message;
+        autoThresholdMax.textContent = '';
+    }
+}
+
+function analyzeImageBrightness(image) {
+    const analysisCanvas = document.createElement('canvas');
+    const analysisCtx = analysisCanvas.getContext('2d');
+    analysisCanvas.width = image.width;
+    analysisCanvas.height = image.height;
+    analysisCtx.drawImage(image, 0, 0);
+
+    const imageData = analysisCtx.getImageData(0, 0, image.width, image.height);
+    const data = imageData.data;
+    const histogram = new Array(256).fill(0);
+    let sum = 0;
+    let count = 0;
+
+    for (let index = 0; index < data.length; index += 4) {
+        const luminance = Math.max(0, Math.min(255, Math.round(
+            data[index] * 0.2126 +
+            data[index + 1] * 0.7152 +
+            data[index + 2] * 0.0722
+        )));
+
+        histogram[luminance]++;
+        sum += luminance;
+        count++;
+    }
+
+    let lowerBound = 0;
+    let upperBound = 255;
+    let cumulative = 0;
+    const lowerTarget = count * 0.05;
+    const upperTarget = count * 0.95;
+
+    for (let value = 0; value < histogram.length; value++) {
+        cumulative += histogram[value];
+        if (cumulative >= lowerTarget) {
+            lowerBound = value;
+            break;
+        }
+    }
+
+    cumulative = 0;
+    for (let value = 0; value < histogram.length; value++) {
+        cumulative += histogram[value];
+        if (cumulative >= upperTarget) {
+            upperBound = value;
+            break;
+        }
+    }
+
+    const mean = count > 0 ? sum / count : 128;
+    const defaultThreshold = Math.round(mean);
+
+    if (upperBound <= lowerBound) {
+        lowerBound = Math.max(0, defaultThreshold - 40);
+        upperBound = Math.min(255, defaultThreshold + 40);
+    }
+
+    return {
+        lowerBound,
+        upperBound,
+        defaultThreshold,
+        mean,
+    };
+}
+
+function scheduleAutoThresholdPreview() {
+    if (!currentImage || !autoBrightnessStats) return;
+
+    if (autoThresholdPreviewTimer) {
+        clearTimeout(autoThresholdPreviewTimer);
+    }
+
+    const requestToken = ++autoThresholdPreviewToken;
+    autoThresholdPreviewTimer = setTimeout(() => {
+        renderAutoThresholdPreview(requestToken);
+    }, 80);
+}
+
+function renderAutoThresholdPreview(requestToken) {
+    if (!currentImage || !autoBrightnessStats) {
+        clearAutoThresholdPreview('上传图片后，这里会显示阈值二分预览。');
+        return;
+    }
+
+    const previewMaxWidth = 280;
+    const previewWidth = Math.max(1, Math.min(previewMaxWidth, currentImage.width));
+    const previewHeight = Math.max(1, Math.round(previewWidth * (currentImage.height / currentImage.width)));
+    const sourceCanvas = document.createElement('canvas');
+    const sourceCtx = sourceCanvas.getContext('2d');
+    sourceCanvas.width = previewWidth;
+    sourceCanvas.height = previewHeight;
+    sourceCtx.imageSmoothingEnabled = true;
+    sourceCtx.drawImage(currentImage, 0, 0, previewWidth, previewHeight);
+
+    const imageData = sourceCtx.getImageData(0, 0, previewWidth, previewHeight);
+    const data = imageData.data;
+    const threshold = Number(autoThresholdInput.value);
+    const previewImageData = sourceCtx.createImageData(previewWidth, previewHeight);
+    const previewData = previewImageData.data;
+
+    for (let index = 0; index < data.length; index += 4) {
+        const luminance = data[index] * 0.2126 + data[index + 1] * 0.7152 + data[index + 2] * 0.0722;
+        const isBright = luminance >= threshold;
+        const value = isBright ? 255 : 0;
+        previewData[index] = value;
+        previewData[index + 1] = value;
+        previewData[index + 2] = value;
+        previewData[index + 3] = 255;
+    }
+
+    if (requestToken !== autoThresholdPreviewToken) return;
+
+    autoThresholdPreview.width = previewWidth;
+    autoThresholdPreview.height = previewHeight;
+    autoThresholdPreview.style.aspectRatio = previewWidth + ' / ' + previewHeight;
+    autoThresholdPreviewCtx.putImageData(previewImageData, 0, 0);
+    autoThresholdPreviewTimer = null;
+}
+
+function buildAutoMaskFromThreshold(threshold, brightAsMask) {
+    if (!currentImage || !maskCanvas || !maskCtx) return;
+
+    pushHistory();
+
+    const sourceCanvas = document.createElement('canvas');
+    const sourceCtx = sourceCanvas.getContext('2d');
+    sourceCanvas.width = currentImage.width;
+    sourceCanvas.height = currentImage.height;
+    sourceCtx.drawImage(currentImage, 0, 0);
+
+    const imageData = sourceCtx.getImageData(0, 0, currentImage.width, currentImage.height);
+    const data = imageData.data;
+
+    const output = maskCtx.createImageData(currentImage.width, currentImage.height);
+    const outputData = output.data;
+
+    for (let index = 0; index < data.length; index += 4) {
+        const luminance = data[index] * 0.2126 + data[index + 1] * 0.7152 + data[index + 2] * 0.0722;
+        const isTarget = brightAsMask ? luminance >= threshold : luminance < threshold;
+        const value = isTarget ? 0 : 255;
+        outputData[index] = value;
+        outputData[index + 1] = value;
+        outputData[index + 2] = value;
+        outputData[index + 3] = 255;
+    }
+
+    maskCtx.putImageData(output, 0, 0);
+    updateCanvas();
+    schedulePreviewUpdate(true);
+}
+
+function buildAutoMaskWithBrightPercentMapping(threshold) {
+    if (!currentImage || !maskCanvas || !maskCtx) return;
+
+    pushHistory();
+
+    const sourceCanvas = document.createElement('canvas');
+    const sourceCtx = sourceCanvas.getContext('2d');
+    sourceCanvas.width = currentImage.width;
+    sourceCanvas.height = currentImage.height;
+    sourceCtx.drawImage(currentImage, 0, 0);
+
+    const imageData = sourceCtx.getImageData(0, 0, currentImage.width, currentImage.height);
+    const data = imageData.data;
+    const histogram = new Array(256).fill(0);
+    const luminanceByPixel = new Uint8Array(currentImage.width * currentImage.height);
+
+    for (let dataIndex = 0, pixelIndex = 0; dataIndex < data.length; dataIndex += 4, pixelIndex++) {
+        const luminance = Math.max(0, Math.min(255, Math.round(
+            data[dataIndex] * 0.2126 +
+            data[dataIndex + 1] * 0.7152 +
+            data[dataIndex + 2] * 0.0722
+        )));
+
+        luminanceByPixel[pixelIndex] = luminance;
+        if (luminance > threshold) {
+            histogram[luminance]++;
+        }
+    }
+
+    let brightPixelCount = 0;
+    for (let luminance = threshold + 1; luminance < histogram.length; luminance++) {
+        brightPixelCount += histogram[luminance];
+    }
+
+    const output = maskCtx.createImageData(currentImage.width, currentImage.height);
+    const outputData = output.data;
+
+    if (brightPixelCount === 0) {
+        for (let index = 0; index < outputData.length; index += 4) {
+            outputData[index] = 255;
+            outputData[index + 1] = 255;
+            outputData[index + 2] = 255;
+            outputData[index + 3] = 255;
+        }
+
+        maskCtx.putImageData(output, 0, 0);
+        updateCanvas();
+        schedulePreviewUpdate(true);
+        return;
+    }
+
+    const rankByLuminance = new Array(256).fill(0);
+    let runningBrightCount = 0;
+
+    for (let luminance = threshold + 1; luminance < histogram.length; luminance++) {
+        const countAtLevel = histogram[luminance];
+        if (countAtLevel > 0) {
+            const rankPercent = brightPixelCount === 1
+                ? 1
+                : (runningBrightCount + (countAtLevel - 1) / 2) / (brightPixelCount - 1);
+            rankByLuminance[luminance] = Math.max(0, Math.min(1, rankPercent));
+            runningBrightCount += countAtLevel;
+        }
+    }
+
+    for (let pixelIndex = 0, dataIndex = 0; pixelIndex < luminanceByPixel.length; pixelIndex++, dataIndex += 4) {
+        const luminance = luminanceByPixel[pixelIndex];
+        let value = 255;
+
+        if (luminance > threshold) {
+            const percent = rankByLuminance[luminance];
+            value = Math.round(255 * (1 - percent));
+        }
+
+        outputData[dataIndex] = value;
+        outputData[dataIndex + 1] = value;
+        outputData[dataIndex + 2] = value;
+        outputData[dataIndex + 3] = 255;
+    }
+
+    maskCtx.putImageData(output, 0, 0);
+    updateCanvas();
+    schedulePreviewUpdate(true);
+}
+
+function applyAutoMask(mode) {
+    if (!currentImage || !maskCanvas) return;
+
+    const threshold = Number(autoThresholdInput.value);
+    if (mode === 'bright-percent') {
+        buildAutoMaskWithBrightPercentMapping(threshold);
+        showStatus('已按亮度排名百分比绘制亮区遮罩', 'success');
+        return;
+    }
+
+    const isBrightMode = mode === 'bright';
+    buildAutoMaskFromThreshold(threshold, isBrightMode);
+    showStatus(isBrightMode ? '已自动绘制亮区遮罩' : '已自动绘制暗区遮罩', 'success');
 }
 
 function setActiveTool(tool) {
@@ -757,6 +1072,18 @@ function resetImage() {
     zoomLevel = 1;
     zoomLevelInput.value = '100';
     zoomValue.textContent = '100';
+    autoBrightnessStats = null;
+    autoThresholdPreviewToken++;
+    if (autoThresholdPreviewTimer) {
+        clearTimeout(autoThresholdPreviewTimer);
+        autoThresholdPreviewTimer = null;
+    }
+    autoThresholdInput.disabled = true;
+    autoBrightMaskBtn.disabled = true;
+    autoBrightPercentMaskBtn.disabled = true;
+    autoDarkMaskBtn.disabled = true;
+    setAutoThresholdRange(0, 255, 128);
+    clearAutoThresholdPreview('上传图片后，这里会显示阈值二分预览。');
 
     // 禁用按钮
     clearBtn.disabled = true;

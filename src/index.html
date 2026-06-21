@@ -62,6 +62,25 @@
                 <label for="opacity">不透明度（亮度）: <span id="opacity-value">80</span>%</label>
                 <input type="range" id="opacity" min="1" max="100" value="80">
             </div>
+            <div class="control-group auto-group">
+                <span class="group-title">自动绘制</span>
+                <label for="auto-threshold">
+                    整体亮度阈值: <span id="auto-threshold-value">0</span>
+                </label>
+                <input type="range" id="auto-threshold" min="0" max="255" value="128">
+                <div class="threshold-range-info">
+                    <span id="auto-threshold-min">最小值 0</span>
+                    <span id="auto-threshold-max">最大值 255</span>
+                </div>
+                <div class="auto-preview-wrap">
+                    <canvas id="auto-threshold-preview" class="auto-threshold-preview" aria-label="阈值二分预览"></canvas>
+                </div>
+                <div class="tool-buttons auto-action-buttons">
+                    <button type="button" id="auto-bright-mask-btn" class="secondary-btn">亮区绘制遮罩（统一亮度）</button>
+                    <button type="button" id="auto-bright-percent-mask-btn" class="secondary-btn">亮区绘罩绘制（百分比映射）</button>
+                    <button type="button" id="auto-dark-mask-btn" class="secondary-btn">暗区绘制遮罩</button>
+                </div>
+            </div>
             <div class="control-group edit-group">
                 <span class="group-title">编辑</span>
                 <div class="tool-buttons">
