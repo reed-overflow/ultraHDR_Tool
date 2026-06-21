@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+
+    <link href="./style.css" rel="stylesheet" type="text/css"/>
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>图片UltraHDR遮罩绘制工具</title>
+    
+    <!-- 添加import map来帮助浏览器解析ES模块 -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/node_modules/three/build/three.module.js",
+          "@monogrid/gainmap-js": "/node_modules/@monogrid/gainmap-js/dist/encode.js",
+          "@monogrid/gainmap-js/libultrahdr": "/node_modules/@monogrid/gainmap-js/dist/libultrahdr.js"
+        }
+      }
+    </script>
+</head>
+<body>
+    <div class="container">
+        <h1>图片UltraHDR遮罩绘制工具</h1>
+        
+        <div class="upload-section">
+            <input type="file" id="file-input" accept="image/*">
+            <label for="file-input" class="upload-btn">选择图片</label>
+            <p id="file-name" style="margin-top: 10px;">未选择图片</p>
+        </div>
+        
+        <div class="canvas-container" id="canvas-container">
+            <canvas id="image-canvas"></canvas>
+            <div class="brush-preview" id="brush-preview" aria-hidden="true"></div>
+        </div>
+        
+        <div class="controls">
+            <div class="control-group tool-group">
+                <span class="group-title">工具</span>
+                <div class="tool-buttons">
+                    <button type="button" id="brush-btn" class="tool-btn active">画笔</button>
+                    <button type="button" id="eraser-btn" class="tool-btn">橡皮</button>
+                    <button type="button" id="move-btn" class="tool-btn">移动</button>
+                </div>
+                <div class="shortcut-hint">快捷键：B 切换画笔，E 切换橡皮</div>
+            </div>
+            <div class="control-group zoom-group">
+                <span class="group-title">缩放</span>
+                <div class="zoom-actions">
+                    <button type="button" id="zoom-out-btn" class="secondary-btn">缩小</button>
+                    <button type="button" id="zoom-reset-btn" class="secondary-btn">100%</button>
+                    <button type="button" id="zoom-in-btn" class="secondary-btn">放大</button>
+                </div>
+                <label for="zoom-level">显示缩放: <span id="zoom-value">100</span>%</label>
+                <input type="range" id="zoom-level" min="25" max="400" step="5" value="100">
+            </div>
+            <div class="control-group">
+                <label for="brush-size">画笔大小: <span id="size-value">10</span></label>
+                <input type="range" id="brush-size" min="1" max="500" value="10">
+            </div>
+            <div class="control-group">
+                <label for="opacity">不透明度（亮度）: <span id="opacity-value">80</span>%</label>
+                <input type="range" id="opacity" min="1" max="100" value="80">
+            </div>
+            <div class="control-group edit-group">
+                <span class="group-title">编辑</span>
+                <div class="tool-buttons">
+                    <button type="button" id="undo-btn" class="secondary-btn" disabled>撤销</button>
+                    <button type="button" id="redo-btn" class="secondary-btn" disabled>重做</button>
+                </div>
+                <div class="shortcut-hint">快捷键：Ctrl+Z / Ctrl+Y</div>
+            </div>
+        </div>
+        
+        <div class="action-buttons">
+            <button id="clear-btn" class="clear-btn" disabled>清除遮罩</button>
+            <button id="reset-btn" class="reset-btn" disabled>重置图片</button>
+            <button id="download-btn" class="download-btn" disabled hidden>下载遮罩图</button>
+            <button id="export-hdr-btn" class="export-hdr-btn" disabled>导出UltraHDR图片</button>
+        </div>
+
+        <div class="preview-panel">
+            <div class="preview-header">
+                <h3>UltraHDR 预览</h3>
+                <p>这里会根据当前遮罩实时生成预览图，方便你先查看导出后的效果，再决定是否继续调整。</p>
+            </div>
+            <div class="preview-controls">
+                <label class="preview-toggle">
+                    <input type="checkbox" id="live-preview-toggle" checked>
+                    <span>实时更新预览</span>
+                </label>
+                <button type="button" id="refresh-preview-btn" class="secondary-btn preview-refresh-btn">更新预览</button>
+            </div>
+            <div class="preview-image-wrap">
+                <img id="ultrahdr-preview-image" class="preview-image" alt="UltraHDR 预览图">
+                <div id="ultrahdr-preview-empty" class="preview-empty">上传图片并绘制遮罩后，这里会显示当前的 UltraHDR 预览。</div>
+            </div>
+            <div id="ultrahdr-preview-status" class="preview-status">尚未生成预览。</div>
+        </div>
+
+        <div class="hdr-test-panel">
+            <div class="hdr-test-header">
+                <h3>UltraHDR 显示测试</h3>
+                <p>
+                    如果你在下面的图片上看不到任何图案，那么你的浏览器或设备很可能不支持 UltraHDR 显示。请尝试在支持 HDR 的设备上查看，或者使用支持 HDR 的显示器，打开系统 HDR 开关。
+                </p>
+            </div>
+            <div class="hdr-test-image-wrap">
+                <img src="./test.jpg" alt="UltraHDR 显示测试图片" class="hdr-test-image">
+            </div>
+            <!-- <div class="hdr-test-note">
+                在支持HDR的显示器，android>14 ios>18设备上
+            </div> -->
+        </div>
+        
+        <div class="instructions">
+            <h3>使用说明</h3>
+            <ol>
+                <li>点击"选择图片"上传一张图片</li>
+                <li>在图片上用鼠标绘制黑白遮罩（黑色区域为不透明，白色区域为透明）</li>
+                <li>使用画笔、橡皮、撤销、重做等工具微调遮罩</li>
+                <li>调整画笔大小和不透明度以获得理想效果</li>
+                <li>使用"清除遮罩"按钮清除当前绘制的遮罩</li>
+                <li>使用"重置图片"按钮重新上传图片</li>
+                <!-- <li>满意后点击"下载遮罩图"保存黑白遮罩文件</li> -->
+                <li>点击"导出UltraHDR"将遮罩作为gain map与原图合并并下载</li>
+            </ol>
+        </div>
+        
+        <div id="status-message" class="status-message"></div>
+    </div>
+
+    <script type="module" src="script.js"></script>
+</body>
+</html>
