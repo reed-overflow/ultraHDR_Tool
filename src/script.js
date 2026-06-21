@@ -1,3 +1,6 @@
+// 导入gainmap-js库
+import * as libultrahdr from '@monogrid/gainmap-js/libultrahdr';
+
 // 获取DOM元素
 const fileInput = document.getElementById('file-input');
 const fileName = document.getElementById('file-name');
@@ -839,9 +842,6 @@ function downloadMask() {
 }
 
 
-
-// 导入gainmap-js库
-import * as libultrahdr from '@monogrid/gainmap-js/libultrahdr';
 
 // 将原图和遮罩合并成一张UltraHDR图片，并下载
 async function exportUltraHDR() {

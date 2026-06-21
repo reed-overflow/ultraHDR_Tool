@@ -1,5 +1,5 @@
 {
-  "name": "hdrutils",
+  "name": "ultrahdr-tool",
   "version": "1.0.0",
   "description": "HDR图像处理工具，支持创建UltraHDR格式图片",
   "main": "./src/server.js",
@@ -11,7 +11,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@monogrid/gainmap-js": "^3.1.0",
+    "@monogrid/gainmap-js": "3.1.0",
     "express": "^4.18.2",
     "three": "^0.180.0"
   },
