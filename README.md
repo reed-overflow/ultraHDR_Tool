@@ -38,6 +38,14 @@ or
 npm run dev
 ```
 
+## 打包静态网页
+
+```bash
+npm run build
+```
+
+打包后会在 `dist/` 下生成静态网页文件，包含 `index.html`、`style.css` 和打包后的 `script.js`。
+
 4. 打开浏览器，访问 http://localhost:3000 查看应用
 
 ## 使用说明
