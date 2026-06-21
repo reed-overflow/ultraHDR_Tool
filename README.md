@@ -6,6 +6,10 @@
 ![示例界面](./doc/ss1.jpg)
 ![示例结果](./doc/ss2.jpg)
 
+## 工具地址
+
+[https://reed-overflow.github.io/ultraHDR_Tool/](https://reed-overflow.github.io/ultraHDR_Tool/)
+
 ## 功能特性
 
 - 上传图片并绘制黑白遮罩
