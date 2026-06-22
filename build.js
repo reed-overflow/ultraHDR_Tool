@@ -18,6 +18,21 @@ function copyDependencyAsset(fromPath, toFileName) {
     fs.copyFileSync(fromPath, path.join(distDir, toFileName));
 }
 
+function copyDir(fromDir, toDir) {
+    fs.mkdirSync(toDir, { recursive: true });
+
+    for (const entry of fs.readdirSync(fromDir, { withFileTypes: true })) {
+        const sourcePath = path.join(fromDir, entry.name);
+        const targetPath = path.join(toDir, entry.name);
+
+        if (entry.isDirectory()) {
+            copyDir(sourcePath, targetPath);
+        } else {
+            fs.copyFileSync(sourcePath, targetPath);
+        }
+    }
+}
+
 async function build() {
     ensureDistDir();
 
@@ -34,6 +49,7 @@ async function build() {
     copyFile('index.html');
     copyFile('style.css');
     copyFile('test.jpg');
+    copyDir(path.join(srcDir, 'i18n'), path.join(distDir, 'i18n'));
     copyDependencyAsset(
         path.join(rootDir, 'node_modules', '@monogrid', 'gainmap-js', 'dist', 'libultrahdr-esm.wasm'),
         'libultrahdr-esm.wasm'

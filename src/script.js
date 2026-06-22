@@ -39,6 +39,7 @@ const previewEmpty = document.getElementById('ultrahdr-preview-empty');
 const previewStatus = document.getElementById('ultrahdr-preview-status');
 const livePreviewToggle = document.getElementById('live-preview-toggle');
 const refreshPreviewBtn = document.getElementById('refresh-preview-btn');
+const languageSelect = document.getElementById('language-select');
 
 const autoThresholdPreviewCtx = autoThresholdPreview.getContext('2d');
 
@@ -67,9 +68,126 @@ let activePointerId = null;
 let isPanning = false;
 let panStart = null;
 let lastBrushPoint = null;
+const defaultLanguage = 'zh-CN';
+const supportedLanguages = ['zh-CN', 'en'];
+let currentLanguage = defaultLanguage;
+let currentTranslations = {};
+const translationCache = {};
+
+function getInitialLanguage() {
+    const savedLanguage = window.localStorage.getItem('ultrahdr-tool-language');
+    return supportedLanguages.includes(savedLanguage) ? savedLanguage : defaultLanguage;
+}
+
+async function loadTranslations(language) {
+    const languageToLoad = supportedLanguages.includes(language) ? language : defaultLanguage;
+
+    if (translationCache[languageToLoad]) {
+        return translationCache[languageToLoad];
+    }
+
+    const response = await fetch('./i18n/' + languageToLoad + '.json');
+    if (!response.ok) {
+        throw new Error('Failed to load translations for ' + languageToLoad);
+    }
+
+    const translations = await response.json();
+    translationCache[languageToLoad] = translations;
+    return translations;
+}
+
+function formatTranslation(template, params = {}) {
+    return template.replace(/\{(\w+)\}/g, (match, key) => (
+        Object.prototype.hasOwnProperty.call(params, key) ? String(params[key]) : match
+    ));
+}
+
+function t(key, params) {
+    const template = currentTranslations[key] || key;
+    return formatTranslation(template, params);
+}
+
+function setLocalizedText(element, key, params = {}) {
+    if (!element) return;
+
+    element.textContent = t(key, params);
+    element.dataset.i18nStateKey = key;
+    element.dataset.i18nStateParams = JSON.stringify(params);
+}
+
+function clearLocalizedState(element) {
+    if (!element) return;
+
+    delete element.dataset.i18nStateKey;
+    delete element.dataset.i18nStateParams;
+}
+
+function applyStaticTranslations() {
+    document.documentElement.lang = currentLanguage;
+
+    document.querySelectorAll('[data-i18n]').forEach(element => {
+        element.textContent = t(element.dataset.i18n);
+    });
+
+    document.querySelectorAll('[data-i18n-attr]').forEach(element => {
+        element.dataset.i18nAttr.split(';').forEach(pair => {
+            const [attribute, key] = pair.split(':').map(value => value && value.trim());
+            if (attribute && key) {
+                element.setAttribute(attribute, t(key));
+            }
+        });
+    });
+
+    document.querySelectorAll('[data-i18n-state-key]').forEach(element => {
+        const key = element.dataset.i18nStateKey;
+        let params = {};
+
+        try {
+            params = JSON.parse(element.dataset.i18nStateParams || '{}');
+        } catch (error) {
+            params = {};
+        }
+
+        element.textContent = t(key, params);
+    });
+
+    languageSelect.value = currentLanguage;
+}
+
+async function setLanguage(language, persist = true) {
+    const nextLanguage = supportedLanguages.includes(language) ? language : defaultLanguage;
+    currentTranslations = await loadTranslations(nextLanguage);
+    currentLanguage = nextLanguage;
+    applyStaticTranslations();
+
+    if (persist) {
+        window.localStorage.setItem('ultrahdr-tool-language', nextLanguage);
+    }
+}
+
+async function initI18n() {
+    const initialLanguage = getInitialLanguage();
+
+    try {
+        await setLanguage(initialLanguage, false);
+    } catch (error) {
+        console.error('加载翻译文件失败:', error);
+        if (initialLanguage !== defaultLanguage) {
+            await setLanguage(defaultLanguage, false);
+        }
+    }
+
+    languageSelect.addEventListener('change', event => {
+        setLanguage(event.target.value).catch(error => {
+            console.error('切换语言失败:', error);
+        });
+    });
+}
 
 // 初始化函数
-function init() {
+async function init() {
+    await initI18n();
+
     // 设置画笔大小和不透明度显示
     sizeValue.textContent = brushSizeInput.value;
     opacityValue.textContent = opacityInput.value;
@@ -81,7 +199,10 @@ function init() {
     autoBrightPercentMaskBtn.disabled = true;
     autoDarkMaskBtn.disabled = true;
     setAutoThresholdRange(0, 255, Number(autoThresholdInput.value));
-    clearAutoThresholdPreview('上传图片后，这里会显示阈值二分预览。');
+    clearAutoThresholdPreview('thresholdPreview.empty');
+    setLocalizedText(fileName, 'upload.noFile');
+    setPreviewEmptyState('preview.emptyBeforeMask');
+    setLocalizedText(previewStatus, 'preview.notGenerated');
 
     // 监听文件上传
     fileInput.addEventListener('change', handleFileUpload);
@@ -114,9 +235,10 @@ function init() {
     autoBrightPercentMaskBtn.addEventListener('click', () => applyAutoMask('bright-percent'));
     autoDarkMaskBtn.addEventListener('click', () => applyAutoMask('dark'));
     livePreviewToggle.addEventListener('change', () => {
-        previewStatus.textContent = livePreviewToggle.checked
-            ? '已开启实时更新预览。'
-            : '已关闭实时更新预览，请点击“更新预览”手动生成。';
+        setLocalizedText(
+            previewStatus,
+            livePreviewToggle.checked ? 'preview.liveOn' : 'preview.liveOffManual'
+        );
 
         if (livePreviewToggle.checked) {
             schedulePreviewUpdate(true);
@@ -157,6 +279,7 @@ function handleFileUpload(event) {
     if (!file) return;
 
     // 显示文件名
+    clearLocalizedState(fileName);
     fileName.textContent = file.name;
 
     // 创建图片对象
@@ -197,11 +320,11 @@ function handleFileUpload(event) {
             setActiveTool('brush');
             updateHistoryButtons();
             scheduleAutoThresholdPreview();
-            setPreviewEmptyState('已上传图片，开始绘制遮罩后将显示当前 UltraHDR 预览。');
+            setPreviewEmptyState('preview.emptyUploaded');
             if (livePreviewToggle.checked) {
                 schedulePreviewUpdate(true);
             } else {
-                previewStatus.textContent = '实时预览已关闭，点击“更新预览”手动生成。';
+                setLocalizedText(previewStatus, 'preview.liveOffAfterUpload');
             }
 
             // 启用按钮
@@ -212,7 +335,7 @@ function handleFileUpload(event) {
             undoBtn.disabled = true;
             redoBtn.disabled = true;
 
-            showStatus('图片已上传，现在可以绘制遮罩', 'success');
+            showStatusByKey('status.imageUploaded', 'success');
         };
         img.src = e.target.result;
     };
@@ -294,19 +417,20 @@ function setAutoThresholdRange(minValue, maxValue, value) {
     autoThresholdInput.max = String(roundedMax);
     autoThresholdInput.value = String(boundedValue);
     autoThresholdValue.textContent = String(boundedValue);
-    autoThresholdMin.textContent = '最小值 ' + roundedMin;
-    autoThresholdMax.textContent = '最大值 ' + roundedMax;
+    setLocalizedText(autoThresholdMin, 'auto.thresholdMin', { value: roundedMin });
+    setLocalizedText(autoThresholdMax, 'auto.thresholdMax', { value: roundedMax });
 }
 
-function clearAutoThresholdPreview(message) {
+function clearAutoThresholdPreview(messageKey) {
     autoThresholdPreview.width = 1;
     autoThresholdPreview.height = 1;
     autoThresholdPreviewCtx.fillStyle = '#111';
     autoThresholdPreviewCtx.fillRect(0, 0, 1, 1);
     autoThresholdPreview.style.aspectRatio = '1 / 1';
-    if (message) {
-        autoThresholdMin.textContent = message;
+    if (messageKey) {
+        setLocalizedText(autoThresholdMin, messageKey);
         autoThresholdMax.textContent = '';
+        clearLocalizedState(autoThresholdMax);
     }
 }
 
@@ -389,7 +513,7 @@ function scheduleAutoThresholdPreview() {
 
 function renderAutoThresholdPreview(requestToken) {
     if (!currentImage || !autoBrightnessStats) {
-        clearAutoThresholdPreview('上传图片后，这里会显示阈值二分预览。');
+        clearAutoThresholdPreview('thresholdPreview.empty');
         return;
     }
 
@@ -572,13 +696,13 @@ function applyAutoMask(mode) {
     const threshold = Number(autoThresholdInput.value);
     if (mode === 'bright-percent') {
         buildAutoMaskWithBrightPercentMapping(threshold);
-        showStatus('已按亮度排名百分比绘制亮区遮罩', 'success');
+        showStatusByKey('status.autoBrightPercent', 'success');
         return;
     }
 
     const isBrightMode = mode === 'bright';
     buildAutoMaskFromThreshold(threshold, isBrightMode);
-    showStatus(isBrightMode ? '已自动绘制亮区遮罩' : '已自动绘制暗区遮罩', 'success');
+    showStatusByKey(isBrightMode ? 'status.autoBright' : 'status.autoDark', 'success');
 }
 
 function setActiveTool(tool) {
@@ -734,17 +858,17 @@ function handleCanvasWheel(event) {
     hideBrushPreview();
 }
 
-function setPreviewEmptyState(message) {
-    previewEmpty.textContent = message;
+function setPreviewEmptyState(messageKey) {
+    setLocalizedText(previewEmpty, messageKey);
     previewEmpty.style.display = 'flex';
     previewImage.classList.remove('visible');
 }
 
-function setPreviewImage(url, message) {
+function setPreviewImage(url, messageKey) {
     previewImage.src = url;
     previewImage.classList.add('visible');
     previewEmpty.style.display = 'none';
-    previewStatus.textContent = message;
+    setLocalizedText(previewStatus, messageKey);
 }
 
 function schedulePreviewUpdate(force = false) {
@@ -756,7 +880,7 @@ function schedulePreviewUpdate(force = false) {
 
     if (!force && !livePreviewToggle.checked) return;
 
-    previewStatus.textContent = '正在生成 UltraHDR 预览...';
+    setLocalizedText(previewStatus, 'preview.generating');
     const requestToken = ++previewRequestToken;
 
     previewUpdateTimer = setTimeout(() => {
@@ -772,7 +896,7 @@ function triggerManualPreviewUpdate(force) {
         previewUpdateTimer = null;
     }
 
-    previewStatus.textContent = '正在生成 UltraHDR 预览...';
+    setLocalizedText(previewStatus, 'preview.generating');
     const requestToken = ++previewRequestToken;
     generateUltraHDRPreview(requestToken);
 }
@@ -858,8 +982,8 @@ async function buildUltraHDRResult() {
 
 async function generateUltraHDRPreview(requestToken) {
     if (!currentImage || !maskCanvas) {
-        setPreviewEmptyState('上传图片并绘制遮罩后，这里会显示 UltraHDR 预览。');
-        previewStatus.textContent = '尚未生成预览。';
+        setPreviewEmptyState('preview.emptyBeforeMask');
+        setLocalizedText(previewStatus, 'preview.notGenerated');
         return;
     }
 
@@ -872,13 +996,13 @@ async function generateUltraHDRPreview(requestToken) {
             URL.revokeObjectURL(previewImage.dataset.previewUrl);
         }
         previewImage.dataset.previewUrl = url;
-        setPreviewImage(url, '当前遮罩对应的 UltraHDR 预览已更新。');
+        setPreviewImage(url, 'preview.updated');
     } catch (error) {
         if (requestToken !== previewRequestToken) return;
 
         console.error('生成UltraHDR预览失败:', error);
-        previewStatus.textContent = '预览生成失败，请继续编辑后重试。';
-        setPreviewEmptyState('预览暂时无法生成。');
+        setLocalizedText(previewStatus, 'preview.failedStatus');
+        setPreviewEmptyState('preview.failedEmpty');
     }
 }
 
@@ -1013,7 +1137,7 @@ function clearMask() {
     updateCanvas();
     schedulePreviewUpdate();
 
-    showStatus('遮罩已清除', 'success');
+    showStatusByKey('status.maskCleared', 'success');
 }
 
 function undoMask() {
@@ -1024,7 +1148,7 @@ function undoMask() {
     redoStack.push(currentState);
     restoreMask(previousState);
     schedulePreviewUpdate();
-    showStatus('已撤销上一步操作', 'success');
+    showStatusByKey('status.undo', 'success');
 }
 
 function redoMask() {
@@ -1035,7 +1159,7 @@ function redoMask() {
     undoStack.push(currentState);
     restoreMask(nextState);
     schedulePreviewUpdate();
-    showStatus('已重做上一步操作', 'success');
+    showStatusByKey('status.redo', 'success');
 }
 
 function handleKeyboardShortcuts(event) {
@@ -1061,13 +1185,13 @@ function handleKeyboardShortcuts(event) {
 
     if (key === 'b') {
         setActiveTool('brush');
-        showStatus('已切换到画笔', 'info');
+        showStatusByKey('status.toolBrush', 'info');
         return;
     }
 
     if (key === 'e') {
         setActiveTool('eraser');
-        showStatus('已切换到橡皮', 'info');
+        showStatusByKey('status.toolEraser', 'info');
     }
 }
 
@@ -1075,7 +1199,7 @@ function handleKeyboardShortcuts(event) {
 function resetImage() {
     // 重置文件输入
     fileInput.value = '';
-    fileName.textContent = '未选择图片';
+    setLocalizedText(fileName, 'upload.noFile');
 
     // 清除Canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -1104,7 +1228,7 @@ function resetImage() {
     autoBrightPercentMaskBtn.disabled = true;
     autoDarkMaskBtn.disabled = true;
     setAutoThresholdRange(0, 255, 128);
-    clearAutoThresholdPreview('上传图片后，这里会显示阈值二分预览。');
+    clearAutoThresholdPreview('thresholdPreview.empty');
 
     // 禁用按钮
     clearBtn.disabled = true;
@@ -1119,10 +1243,10 @@ function resetImage() {
     }
     previewImage.classList.remove('visible');
     previewImage.removeAttribute('src');
-    setPreviewEmptyState('上传图片后，这里会显示当前的 UltraHDR 预览。');
-    previewStatus.textContent = '尚未生成预览。';
+    setPreviewEmptyState('preview.emptyInitial');
+    setLocalizedText(previewStatus, 'preview.notGenerated');
 
-    showStatus('请上传新图片', 'info');
+    showStatusByKey('status.uploadNewImage', 'info');
 }
 
 // 下载遮罩图
@@ -1186,7 +1310,7 @@ function downloadMask() {
     link.click();
     document.body.removeChild(link);
 
-    showStatus('遮罩图已下载', 'success');
+    showStatusByKey('status.maskDownloaded', 'success');
 }
 
 
@@ -1194,12 +1318,12 @@ function downloadMask() {
 // 将原图和遮罩合并成一张UltraHDR图片，并下载
 async function exportUltraHDR() {
     if (!currentImage || !maskCanvas) {
-        showStatus('请先上传图片并创建遮罩', 'error');
+        showStatusByKey('status.needImageAndMask', 'error');
         return;
     }
 
     try {
-        showStatus('正在生成UltraHDR图片...', 'info');
+        showStatusByKey('status.exportGenerating', 'info');
 
         const resultBlob = await buildUltraHDRResult();
 
@@ -1225,17 +1349,27 @@ async function exportUltraHDR() {
         // 释放URL对象
         URL.revokeObjectURL(url);
 
-        showStatus('UltraHDR图片已导出', 'success');
+        showStatusByKey('status.exportSuccess', 'success');
     } catch (error) {
         console.error('导出UltraHDR图片失败:', error);
-        showStatus('导出失败，请重试', 'error');
+        showStatusByKey('status.exportFailed', 'error');
     }
 }
 
 
 // 显示状态消息
 function showStatus(message, type) {
+    clearLocalizedState(statusMessage);
     statusMessage.textContent = message;
+    showStatusElement(type);
+}
+
+function showStatusByKey(messageKey, type, params = {}) {
+    setLocalizedText(statusMessage, messageKey, params);
+    showStatusElement(type);
+}
+
+function showStatusElement(type) {
 
     // 设置样式根据类型
     if (type === 'error') {
@@ -1262,4 +1396,8 @@ function showStatus(message, type) {
 }
 
 // 页面加载完成后初始化
-window.addEventListener('load', init);
+window.addEventListener('load', () => {
+    init().catch(error => {
+        console.error('初始化失败:', error);
+    });
+});
