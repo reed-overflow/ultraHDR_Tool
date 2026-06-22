@@ -100,13 +100,13 @@ let strokeOpacity = 1;
 let strokeTool = 'brush';
 const qualitySettings = {
     imageDenoise: false,
-    luminanceDenoise: false,
-    maskNoise: false,
-    maskFilter: false,
-    imageDenoiseStrength: 50,
-    luminanceDenoiseStrength: 70,
-    maskNoiseStrength: 50,
-    maskFilterStrength: 50,
+    luminanceDenoise: true,
+    maskNoise: true,
+    maskFilter: true,
+    imageDenoiseStrength: 45,
+    luminanceDenoiseStrength: 35,
+    maskNoiseStrength: 45,
+    maskFilterStrength: 45,
 };
 let processedSourceCanvas = null;
 let processedSourceDirty = true;
@@ -601,58 +601,105 @@ function getProcessedSourceCanvas() {
 function applyImageDenoise(imageData, width, height) {
     const data = imageData.data;
     const source = new Uint8ClampedArray(data);
-    const strength = getQualityStrength('imageDenoiseStrength') * 0.8;
+    const strength = getQualityStrength('imageDenoiseStrength');
     if (strength <= 0) return;
+
+    const radius = strength > 0.7 ? 2 : 1;
+    const lumaThreshold = 5 + strength * 18;
+    const chromaThreshold = 7 + strength * 22;
+    const blendStrength = 0.18 + strength * 0.5;
 
     for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
+            const index = (y * width + x) * 4;
+            const centerRed = source[index];
+            const centerGreen = source[index + 1];
+            const centerBlue = source[index + 2];
+            const centerLuminance = getLuminance(centerRed, centerGreen, centerBlue);
             let red = 0;
             let green = 0;
             let blue = 0;
-            let count = 0;
+            let weightTotal = 0;
+            let localMin = centerLuminance;
+            let localMax = centerLuminance;
 
-            for (let offsetY = -1; offsetY <= 1; offsetY++) {
+            for (let offsetY = -radius; offsetY <= radius; offsetY++) {
                 const sampleY = y + offsetY;
                 if (sampleY < 0 || sampleY >= height) continue;
 
-                for (let offsetX = -1; offsetX <= 1; offsetX++) {
+                for (let offsetX = -radius; offsetX <= radius; offsetX++) {
                     const sampleX = x + offsetX;
                     if (sampleX < 0 || sampleX >= width) continue;
 
                     const sampleIndex = (sampleY * width + sampleX) * 4;
-                    red += source[sampleIndex];
-                    green += source[sampleIndex + 1];
-                    blue += source[sampleIndex + 2];
-                    count++;
+                    const sampleRed = source[sampleIndex];
+                    const sampleGreen = source[sampleIndex + 1];
+                    const sampleBlue = source[sampleIndex + 2];
+                    const sampleLuminance = getLuminance(sampleRed, sampleGreen, sampleBlue);
+                    const lumaDifference = Math.abs(sampleLuminance - centerLuminance);
+                    const chromaDifference = Math.max(
+                        Math.abs(sampleRed - centerRed),
+                        Math.abs(sampleGreen - centerGreen),
+                        Math.abs(sampleBlue - centerBlue)
+                    );
+
+                    localMin = Math.min(localMin, sampleLuminance);
+                    localMax = Math.max(localMax, sampleLuminance);
+
+                    if (lumaDifference > lumaThreshold || chromaDifference > chromaThreshold) {
+                        continue;
+                    }
+
+                    const distanceSquared = offsetX * offsetX + offsetY * offsetY;
+                    const spatialWeight = 1 / (1 + distanceSquared);
+                    const lumaWeight = 1 - (lumaDifference / lumaThreshold) * 0.55;
+                    const weight = spatialWeight * Math.max(0.15, lumaWeight);
+                    red += sampleRed * weight;
+                    green += sampleGreen * weight;
+                    blue += sampleBlue * weight;
+                    weightTotal += weight;
                 }
             }
 
-            const index = (y * width + x) * 4;
-            data[index] = blendChannel(source[index], red / count, strength);
-            data[index + 1] = blendChannel(source[index + 1], green / count, strength);
-            data[index + 2] = blendChannel(source[index + 2], blue / count, strength);
+            if (weightTotal <= 0) continue;
+
+            const localContrast = localMax - localMin;
+            const flatness = 1 - Math.min(1, localContrast / (lumaThreshold * 2.5));
+            const blend = blendStrength * flatness;
+            data[index] = blendChannel(centerRed, red / weightTotal, blend);
+            data[index + 1] = blendChannel(centerGreen, green / weightTotal, blend);
+            data[index + 2] = blendChannel(centerBlue, blue / weightTotal, blend);
         }
     }
 }
 
 function applyLuminanceDenoise(imageData, width, height) {
     const data = imageData.data;
-    const pixelCount = width * height;
-    const luminanceValues = new Float32Array(pixelCount);
-    const strength = getQualityStrength('luminanceDenoiseStrength') * 0.9;
+    const source = new Uint8ClampedArray(data);
+    const strength = getQualityStrength('luminanceDenoiseStrength');
     if (strength <= 0) return;
 
-    for (let pixelIndex = 0, dataIndex = 0; pixelIndex < pixelCount; pixelIndex++, dataIndex += 4) {
-        luminanceValues[pixelIndex] = getLuminance(data[dataIndex], data[dataIndex + 1], data[dataIndex + 2]);
-    }
+    const baseAmplitude = 0.35 + strength * 2.4;
 
-    const smoothedLuminance = boxBlurFloat(luminanceValues, width, height, 1);
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const index = (y * width + x) * 4;
+            const currentLuminance = getLuminance(source[index], source[index + 1], source[index + 2]);
+            const leftIndex = (y * width + Math.max(0, x - 1)) * 4;
+            const topIndex = (Math.max(0, y - 1) * width + x) * 4;
+            const localContrast = Math.max(
+                Math.abs(currentLuminance - getLuminance(source[leftIndex], source[leftIndex + 1], source[leftIndex + 2])),
+                Math.abs(currentLuminance - getLuminance(source[topIndex], source[topIndex + 1], source[topIndex + 2]))
+            );
+            const contrastFade = 1 - Math.min(1, localContrast / 36) * 0.45;
+            const amplitude = baseAmplitude * contrastFade;
+            const luminanceNoise = triangularNoiseAt(x, y, 17) * amplitude;
+            const chromaAmplitude = amplitude * 0.32;
 
-    for (let pixelIndex = 0, dataIndex = 0; pixelIndex < pixelCount; pixelIndex++, dataIndex += 4) {
-        const delta = (smoothedLuminance[pixelIndex] - luminanceValues[pixelIndex]) * strength;
-        data[dataIndex] = clampByte(data[dataIndex] + delta);
-        data[dataIndex + 1] = clampByte(data[dataIndex + 1] + delta);
-        data[dataIndex + 2] = clampByte(data[dataIndex + 2] + delta);
+            data[index] = clampByte(source[index] + luminanceNoise + triangularNoiseAt(x, y, 29) * chromaAmplitude);
+            data[index + 1] = clampByte(source[index + 1] + luminanceNoise + triangularNoiseAt(x, y, 43) * chromaAmplitude);
+            data[index + 2] = clampByte(source[index + 2] + luminanceNoise + triangularNoiseAt(x, y, 61) * chromaAmplitude);
+        }
     }
 }
 
@@ -732,7 +779,8 @@ function getProcessedMaskCanvas() {
 
 function applyMaskNoise(imageData, width, height) {
     const data = imageData.data;
-    const amplitude = getQualityStrength('maskNoiseStrength') * 24;
+    const strength = getQualityStrength('maskNoiseStrength');
+    const amplitude = 0.7 + strength * 5.8;
     if (amplitude <= 0) return;
 
     for (let y = 0; y < height; y++) {
@@ -740,15 +788,23 @@ function applyMaskNoise(imageData, width, height) {
             const index = (y * width + x) * 4;
             const gray = (data[index] + data[index + 1] + data[index + 2]) / 3;
             const gain = 255 - gray;
-            if (gain <= 4) {
+            if (gain <= 1 || gain >= 254) {
                 data[index] = 255;
                 data[index + 1] = 255;
                 data[index + 2] = 255;
                 data[index + 3] = 255;
+                if (gain >= 254) {
+                    data[index] = 0;
+                    data[index + 1] = 0;
+                    data[index + 2] = 0;
+                }
                 continue;
             }
 
-            const noise = (noiseAt(x, y) - 0.5) * 2 * amplitude * Math.min(1, gain / 80);
+            const edgeFade = Math.min(1, gain / 32, (255 - gain) / 32);
+            const orderedNoise = bayerDitherAt(x, y) * amplitude * 0.35;
+            const randomNoise = triangularNoiseAt(x, y, 101) * amplitude;
+            const noise = (randomNoise + orderedNoise) * edgeFade;
             const noisyGain = clampByte(gain + noise);
             const value = 255 - noisyGain;
             data[index] = value;
@@ -759,11 +815,25 @@ function applyMaskNoise(imageData, width, height) {
     }
 }
 
-function noiseAt(x, y) {
-    let value = Math.imul(x ^ maskNoiseSeed, 374761393) + Math.imul(y, 668265263);
+function noiseAt(x, y, salt = 0) {
+    let value = Math.imul((x + salt * 131) ^ maskNoiseSeed, 374761393) + Math.imul(y + salt * 977, 668265263);
     value = (value ^ (value >>> 13)) >>> 0;
     value = Math.imul(value, 1274126177) >>> 0;
     return ((value ^ (value >>> 16)) >>> 0) / 4294967295;
+}
+
+function triangularNoiseAt(x, y, salt) {
+    return noiseAt(x, y, salt) - noiseAt(x, y, salt + 4099);
+}
+
+function bayerDitherAt(x, y) {
+    const bayer4 = [
+        0, 8, 2, 10,
+        12, 4, 14, 6,
+        3, 11, 1, 9,
+        15, 7, 13, 5,
+    ];
+    return (bayer4[(y & 3) * 4 + (x & 3)] / 15) - 0.5;
 }
 
 function applyMaskBilateralFilter(imageData, width, height) {
@@ -775,9 +845,9 @@ function applyMaskBilateralFilter(imageData, width, height) {
     const source = new Uint8ClampedArray(pixelCount);
     const output = new Uint8ClampedArray(pixelCount);
     const radius = strength > 0.75 ? 3 : 2;
-    const sigmaSpatial = 0.9 + strength * 1.4;
-    const sigmaRange = 40 + strength * 90;
-    const blendStrength = Math.min(1, strength * 2);
+    const sigmaSpatial = 0.85 + strength * 1.6;
+    const sigmaRange = 14 + strength * 52;
+    const blendStrength = 0.28 + strength * 0.62;
     const spatialWeights = [];
     const rangeWeights = new Float32Array(256);
 
@@ -1454,6 +1524,11 @@ function canvasToBlob(canvasElement, type) {
     });
 }
 
+function enableHighQualitySampling(targetCtx) {
+    targetCtx.imageSmoothingEnabled = true;
+    targetCtx.imageSmoothingQuality = 'high';
+}
+
 async function buildUltraHDRResult() {
     if (!currentImage || !maskCanvas) {
         throw new Error('missing-source');
@@ -1463,6 +1538,7 @@ async function buildUltraHDRResult() {
     const originalCtx = originalCanvas.getContext('2d');
     originalCanvas.width = currentImage.width;
     originalCanvas.height = currentImage.height;
+    enableHighQualitySampling(originalCtx);
     drawSourceImage(originalCtx, currentImage.width, currentImage.height);
 
     const originalBlob = await canvasToBlob(originalCanvas, 'image/jpeg');
@@ -1472,12 +1548,14 @@ async function buildUltraHDRResult() {
     const gainCtx = gainCanvas.getContext('2d');
     gainCanvas.width = currentImage.width;
     gainCanvas.height = currentImage.height;
+    enableHighQualitySampling(gainCtx);
 
     const tempMaskCanvas = document.createElement('canvas');
     const tempMaskCtx = tempMaskCanvas.getContext('2d');
     const exportMaskCanvas = getProcessedMaskCanvas();
     tempMaskCanvas.width = exportMaskCanvas.width;
     tempMaskCanvas.height = exportMaskCanvas.height;
+    enableHighQualitySampling(tempMaskCtx);
     tempMaskCtx.drawImage(exportMaskCanvas, 0, 0);
 
     const maskImageData = tempMaskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
