@@ -91,9 +91,58 @@
                     <canvas id="auto-threshold-preview" class="auto-threshold-preview" aria-label="阈值二分预览" data-i18n-attr="aria-label:auto.thresholdPreviewAria"></canvas>
                 </div>
                 <div class="tool-buttons auto-action-buttons">
-                    <button type="button" id="auto-bright-mask-btn" class="secondary-btn" data-i18n="auto.brightMask">亮区绘制遮罩（统一亮度）</button>
                     <button type="button" id="auto-bright-percent-mask-btn" class="secondary-btn" data-i18n="auto.brightPercentMask">亮区绘罩绘制（百分比映射）</button>
+                    <button type="button" id="auto-bright-mask-btn" class="secondary-btn" data-i18n="auto.brightMask">亮区绘制遮罩（统一亮度）</button>
                     <button type="button" id="auto-dark-mask-btn" class="secondary-btn" data-i18n="auto.darkMask">暗区绘制遮罩</button>
+                </div>
+            </div>
+            <div class="control-group quality-group">
+                <span class="group-title" data-i18n="quality.title">图像质量</span>
+                <div class="quality-options">
+                    <div class="quality-option">
+                        <label class="quality-toggle" for="quality-image-denoise">
+                            <input type="checkbox" id="quality-image-denoise">
+                            <span data-i18n="quality.imageDenoise">图像降噪</span>
+                        </label>
+                        <label class="quality-slider-label" for="quality-image-denoise-strength">
+                            <span data-i18n="quality.strengthLabel">强度:</span>
+                            <span><span id="quality-image-denoise-value">50</span>%</span>
+                        </label>
+                        <input type="range" id="quality-image-denoise-strength" min="0" max="100" step="1" value="50">
+                    </div>
+                    <div class="quality-option">
+                        <label class="quality-toggle" for="quality-luminance-denoise">
+                            <input type="checkbox" id="quality-luminance-denoise">
+                            <span data-i18n="quality.luminanceDenoise">亮度降噪</span>
+                        </label>
+                        <label class="quality-slider-label" for="quality-luminance-denoise-strength">
+                            <span data-i18n="quality.strengthLabel">强度:</span>
+                            <span><span id="quality-luminance-denoise-value">70</span>%</span>
+                        </label>
+                        <input type="range" id="quality-luminance-denoise-strength" min="0" max="100" step="1" value="70">
+                    </div>
+                    <div class="quality-option">
+                        <label class="quality-toggle" for="quality-mask-noise">
+                            <input type="checkbox" id="quality-mask-noise">
+                            <span data-i18n="quality.maskNoise">给遮罩增加噪声</span>
+                        </label>
+                        <label class="quality-slider-label" for="quality-mask-noise-strength">
+                            <span data-i18n="quality.strengthLabel">强度:</span>
+                            <span><span id="quality-mask-noise-value">50</span>%</span>
+                        </label>
+                        <input type="range" id="quality-mask-noise-strength" min="0" max="100" step="1" value="50">
+                    </div>
+                    <div class="quality-option">
+                        <label class="quality-toggle" for="quality-mask-filter">
+                            <input type="checkbox" id="quality-mask-filter">
+                            <span data-i18n="quality.maskFilter">遮罩滤波</span>
+                        </label>
+                        <label class="quality-slider-label" for="quality-mask-filter-strength">
+                            <span data-i18n="quality.strengthLabel">强度:</span>
+                            <span><span id="quality-mask-filter-value">50</span>%</span>
+                        </label>
+                        <input type="range" id="quality-mask-filter-strength" min="0" max="100" step="1" value="50">
+                    </div>
                 </div>
             </div>
             <div class="control-group edit-group">

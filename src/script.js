@@ -40,6 +40,30 @@ const previewStatus = document.getElementById('ultrahdr-preview-status');
 const livePreviewToggle = document.getElementById('live-preview-toggle');
 const refreshPreviewBtn = document.getElementById('refresh-preview-btn');
 const languageSelect = document.getElementById('language-select');
+const qualityImageDenoiseInput = document.getElementById('quality-image-denoise');
+const qualityLuminanceDenoiseInput = document.getElementById('quality-luminance-denoise');
+const qualityMaskNoiseInput = document.getElementById('quality-mask-noise');
+const qualityMaskFilterInput = document.getElementById('quality-mask-filter');
+const qualityImageDenoiseStrengthInput = document.getElementById('quality-image-denoise-strength');
+const qualityLuminanceDenoiseStrengthInput = document.getElementById('quality-luminance-denoise-strength');
+const qualityMaskNoiseStrengthInput = document.getElementById('quality-mask-noise-strength');
+const qualityMaskFilterStrengthInput = document.getElementById('quality-mask-filter-strength');
+const qualityImageDenoiseValue = document.getElementById('quality-image-denoise-value');
+const qualityLuminanceDenoiseValue = document.getElementById('quality-luminance-denoise-value');
+const qualityMaskNoiseValue = document.getElementById('quality-mask-noise-value');
+const qualityMaskFilterValue = document.getElementById('quality-mask-filter-value');
+const qualityOptionInputs = [
+    { input: qualityImageDenoiseInput, key: 'imageDenoise' },
+    { input: qualityLuminanceDenoiseInput, key: 'luminanceDenoise' },
+    { input: qualityMaskNoiseInput, key: 'maskNoise' },
+    { input: qualityMaskFilterInput, key: 'maskFilter' },
+];
+const qualityStrengthInputs = [
+    { input: qualityImageDenoiseStrengthInput, value: qualityImageDenoiseValue, key: 'imageDenoiseStrength', affects: 'source' },
+    { input: qualityLuminanceDenoiseStrengthInput, value: qualityLuminanceDenoiseValue, key: 'luminanceDenoiseStrength', affects: 'source' },
+    { input: qualityMaskNoiseStrengthInput, value: qualityMaskNoiseValue, key: 'maskNoiseStrength', affects: 'mask' },
+    { input: qualityMaskFilterStrengthInput, value: qualityMaskFilterValue, key: 'maskFilterStrength', affects: 'mask' },
+];
 
 const autoThresholdPreviewCtx = autoThresholdPreview.getContext('2d');
 
@@ -68,6 +92,21 @@ let activePointerId = null;
 let isPanning = false;
 let panStart = null;
 let lastBrushPoint = null;
+const qualitySettings = {
+    imageDenoise: false,
+    luminanceDenoise: false,
+    maskNoise: false,
+    maskFilter: false,
+    imageDenoiseStrength: 50,
+    luminanceDenoiseStrength: 70,
+    maskNoiseStrength: 50,
+    maskFilterStrength: 50,
+};
+let processedSourceCanvas = null;
+let processedSourceDirty = true;
+let processedMaskCanvas = null;
+let processedMaskDirty = true;
+const maskNoiseSeed = 18273645;
 const defaultLanguage = 'zh-CN';
 const supportedLanguages = ['zh-CN', 'en'];
 let currentLanguage = defaultLanguage;
@@ -203,6 +242,7 @@ async function init() {
     setLocalizedText(fileName, 'upload.noFile');
     setPreviewEmptyState('preview.emptyBeforeMask');
     setLocalizedText(previewStatus, 'preview.notGenerated');
+    syncQualitySettingsFromInputs();
 
     // 监听文件上传
     fileInput.addEventListener('change', handleFileUpload);
@@ -219,6 +259,18 @@ async function init() {
     autoThresholdInput.addEventListener('input', () => {
         autoThresholdValue.textContent = autoThresholdInput.value;
         scheduleAutoThresholdPreview();
+    });
+
+    qualityOptionInputs.forEach(({ input }) => {
+        if (input) {
+            input.addEventListener('change', handleQualitySettingChange);
+        }
+    });
+
+    qualityStrengthInputs.forEach(({ input, affects }) => {
+        if (input) {
+            input.addEventListener('input', () => handleQualityStrengthChange(affects));
+        }
     });
 
     brushBtn.addEventListener('click', () => setActiveTool('brush'));
@@ -290,17 +342,14 @@ function handleFileUpload(event) {
         img.onload = function() {
             // 保存当前图片引用
             currentImage = img;
-            autoBrightnessStats = analyzeImageBrightness(img);
+            markSourceQualityDirty();
+            markMaskQualityDirty();
+            refreshAutoBrightnessStats(false);
             autoThresholdPreviewToken++;
 
             zoomLevel = 1;
             zoomLevelInput.value = '100';
             zoomValue.textContent = '100';
-            setAutoThresholdRange(
-                autoBrightnessStats.lowerBound,
-                autoBrightnessStats.upperBound,
-                autoBrightnessStats.defaultThreshold
-            );
             autoThresholdInput.disabled = false;
             autoBrightMaskBtn.disabled = false;
             autoBrightPercentMaskBtn.disabled = false;
@@ -311,7 +360,7 @@ function handleFileUpload(event) {
 
             // 绘制图片
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            drawSourceImage(ctx, canvas.width, canvas.height);
 
             // 创建遮罩Canvas
             createMaskCanvas();
@@ -390,6 +439,391 @@ function setZoomLevel(nextZoomLevel, fromInput = false) {
     }
 }
 
+function syncQualitySettingsFromInputs() {
+    qualityOptionInputs.forEach(({ input, key }) => {
+        if (input) {
+            qualitySettings[key] = input.checked;
+        }
+    });
+
+    qualityStrengthInputs.forEach(({ input, value, key }) => {
+        if (input) {
+            qualitySettings[key] = Math.max(0, Math.min(100, Number(input.value) || 0));
+            if (value) {
+                value.textContent = String(qualitySettings[key]);
+            }
+        }
+    });
+}
+
+function getQualityStrength(key) {
+    return Math.max(0, Math.min(100, Number(qualitySettings[key]) || 0)) / 100;
+}
+
+function hasSourceQualitySettings() {
+    return qualitySettings.imageDenoise || qualitySettings.luminanceDenoise;
+}
+
+function hasMaskQualitySettings() {
+    return qualitySettings.maskNoise || qualitySettings.maskFilter;
+}
+
+function markSourceQualityDirty() {
+    processedSourceDirty = true;
+    processedSourceCanvas = null;
+}
+
+function markMaskQualityDirty() {
+    processedMaskDirty = true;
+    processedMaskCanvas = null;
+}
+
+function handleQualitySettingChange() {
+    const previousSourceDenoise = qualitySettings.imageDenoise;
+    const previousLuminanceDenoise = qualitySettings.luminanceDenoise;
+    const previousMaskNoise = qualitySettings.maskNoise;
+    const previousMaskFilter = qualitySettings.maskFilter;
+
+    syncQualitySettingsFromInputs();
+
+    const sourceDirty = (
+        previousSourceDenoise !== qualitySettings.imageDenoise ||
+        previousLuminanceDenoise !== qualitySettings.luminanceDenoise
+    );
+
+    const maskDirty = (
+        previousMaskNoise !== qualitySettings.maskNoise ||
+        previousMaskFilter !== qualitySettings.maskFilter
+    );
+
+    refreshQualityOutputs({ sourceDirty, maskDirty, showStatus: true });
+}
+
+function handleQualityStrengthChange(affects) {
+    syncQualitySettingsFromInputs();
+    refreshQualityOutputs({
+        sourceDirty: affects === 'source',
+        maskDirty: affects === 'mask',
+        showStatus: false,
+    });
+}
+
+function refreshQualityOutputs({ sourceDirty = false, maskDirty = false, showStatus = false } = {}) {
+    if (sourceDirty) {
+        markSourceQualityDirty();
+    }
+
+    if (maskDirty) {
+        markMaskQualityDirty();
+    }
+
+    if (!currentImage || (!sourceDirty && !maskDirty)) return;
+
+    if (sourceDirty) {
+        refreshAutoBrightnessStats(true);
+        autoThresholdPreviewToken++;
+        scheduleAutoThresholdPreview();
+    }
+
+    updateCanvas();
+    schedulePreviewUpdate(true);
+
+    if (showStatus) {
+        showStatusByKey('status.qualityUpdated', 'info');
+    }
+}
+
+function refreshAutoBrightnessStats(keepCurrentThreshold) {
+    if (!currentImage) return;
+
+    const nextStats = analyzeImageBrightness();
+    const nextThreshold = keepCurrentThreshold
+        ? Number(autoThresholdInput.value)
+        : nextStats.defaultThreshold;
+
+    autoBrightnessStats = nextStats;
+    setAutoThresholdRange(
+        autoBrightnessStats.lowerBound,
+        autoBrightnessStats.upperBound,
+        nextThreshold
+    );
+}
+
+function drawSourceImage(targetCtx, width, height) {
+    if (!currentImage) return;
+
+    if (hasSourceQualitySettings()) {
+        targetCtx.drawImage(getProcessedSourceCanvas(), 0, 0, width, height);
+        return;
+    }
+
+    targetCtx.drawImage(currentImage, 0, 0, width, height);
+}
+
+function getProcessedSourceCanvas() {
+    if (!currentImage) return null;
+
+    if (!processedSourceDirty && processedSourceCanvas) {
+        return processedSourceCanvas;
+    }
+
+    const sourceCanvas = document.createElement('canvas');
+    const sourceCtx = sourceCanvas.getContext('2d');
+    sourceCanvas.width = currentImage.width;
+    sourceCanvas.height = currentImage.height;
+    sourceCtx.drawImage(currentImage, 0, 0);
+
+    if (qualitySettings.imageDenoise || qualitySettings.luminanceDenoise) {
+        const imageData = sourceCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+
+        if (qualitySettings.imageDenoise) {
+            applyImageDenoise(imageData, sourceCanvas.width, sourceCanvas.height);
+        }
+
+        if (qualitySettings.luminanceDenoise) {
+            applyLuminanceDenoise(imageData, sourceCanvas.width, sourceCanvas.height);
+        }
+
+        sourceCtx.putImageData(imageData, 0, 0);
+    }
+
+    processedSourceCanvas = sourceCanvas;
+    processedSourceDirty = false;
+    return processedSourceCanvas;
+}
+
+function applyImageDenoise(imageData, width, height) {
+    const data = imageData.data;
+    const source = new Uint8ClampedArray(data);
+    const strength = getQualityStrength('imageDenoiseStrength') * 0.8;
+    if (strength <= 0) return;
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            let red = 0;
+            let green = 0;
+            let blue = 0;
+            let count = 0;
+
+            for (let offsetY = -1; offsetY <= 1; offsetY++) {
+                const sampleY = y + offsetY;
+                if (sampleY < 0 || sampleY >= height) continue;
+
+                for (let offsetX = -1; offsetX <= 1; offsetX++) {
+                    const sampleX = x + offsetX;
+                    if (sampleX < 0 || sampleX >= width) continue;
+
+                    const sampleIndex = (sampleY * width + sampleX) * 4;
+                    red += source[sampleIndex];
+                    green += source[sampleIndex + 1];
+                    blue += source[sampleIndex + 2];
+                    count++;
+                }
+            }
+
+            const index = (y * width + x) * 4;
+            data[index] = blendChannel(source[index], red / count, strength);
+            data[index + 1] = blendChannel(source[index + 1], green / count, strength);
+            data[index + 2] = blendChannel(source[index + 2], blue / count, strength);
+        }
+    }
+}
+
+function applyLuminanceDenoise(imageData, width, height) {
+    const data = imageData.data;
+    const pixelCount = width * height;
+    const luminanceValues = new Float32Array(pixelCount);
+    const strength = getQualityStrength('luminanceDenoiseStrength') * 0.9;
+    if (strength <= 0) return;
+
+    for (let pixelIndex = 0, dataIndex = 0; pixelIndex < pixelCount; pixelIndex++, dataIndex += 4) {
+        luminanceValues[pixelIndex] = getLuminance(data[dataIndex], data[dataIndex + 1], data[dataIndex + 2]);
+    }
+
+    const smoothedLuminance = boxBlurFloat(luminanceValues, width, height, 1);
+
+    for (let pixelIndex = 0, dataIndex = 0; pixelIndex < pixelCount; pixelIndex++, dataIndex += 4) {
+        const delta = (smoothedLuminance[pixelIndex] - luminanceValues[pixelIndex]) * strength;
+        data[dataIndex] = clampByte(data[dataIndex] + delta);
+        data[dataIndex + 1] = clampByte(data[dataIndex + 1] + delta);
+        data[dataIndex + 2] = clampByte(data[dataIndex + 2] + delta);
+    }
+}
+
+function boxBlurFloat(source, width, height, radius) {
+    const output = new Float32Array(source.length);
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            let total = 0;
+            let count = 0;
+
+            for (let offsetY = -radius; offsetY <= radius; offsetY++) {
+                const sampleY = y + offsetY;
+                if (sampleY < 0 || sampleY >= height) continue;
+
+                const rowOffset = sampleY * width;
+                for (let offsetX = -radius; offsetX <= radius; offsetX++) {
+                    const sampleX = x + offsetX;
+                    if (sampleX < 0 || sampleX >= width) continue;
+
+                    total += source[rowOffset + sampleX];
+                    count++;
+                }
+            }
+
+            output[y * width + x] = count > 0 ? total / count : source[y * width + x];
+        }
+    }
+
+    return output;
+}
+
+function blendChannel(originalValue, smoothedValue, strength) {
+    return clampByte(originalValue + (smoothedValue - originalValue) * strength);
+}
+
+function getLuminance(red, green, blue) {
+    return red * 0.2126 + green * 0.7152 + blue * 0.0722;
+}
+
+function clampByte(value) {
+    return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+function getProcessedMaskCanvas() {
+    if (!maskCanvas) return null;
+
+    if (!hasMaskQualitySettings()) {
+        return maskCanvas;
+    }
+
+    if (!processedMaskDirty && processedMaskCanvas) {
+        return processedMaskCanvas;
+    }
+
+    const outputCanvas = document.createElement('canvas');
+    const outputCtx = outputCanvas.getContext('2d');
+    outputCanvas.width = maskCanvas.width;
+    outputCanvas.height = maskCanvas.height;
+    outputCtx.drawImage(maskCanvas, 0, 0);
+
+    const imageData = outputCtx.getImageData(0, 0, outputCanvas.width, outputCanvas.height);
+
+    if (qualitySettings.maskFilter) {
+        applyMaskBilateralFilter(imageData, outputCanvas.width, outputCanvas.height);
+    }
+
+    if (qualitySettings.maskNoise) {
+        applyMaskNoise(imageData, outputCanvas.width, outputCanvas.height);
+    }
+
+    outputCtx.putImageData(imageData, 0, 0);
+    processedMaskCanvas = outputCanvas;
+    processedMaskDirty = false;
+    return processedMaskCanvas;
+}
+
+function applyMaskNoise(imageData, width, height) {
+    const data = imageData.data;
+    const amplitude = getQualityStrength('maskNoiseStrength') * 24;
+    if (amplitude <= 0) return;
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const index = (y * width + x) * 4;
+            const gray = (data[index] + data[index + 1] + data[index + 2]) / 3;
+            const gain = 255 - gray;
+            if (gain <= 4) {
+                data[index] = 255;
+                data[index + 1] = 255;
+                data[index + 2] = 255;
+                data[index + 3] = 255;
+                continue;
+            }
+
+            const noise = (noiseAt(x, y) - 0.5) * 2 * amplitude * Math.min(1, gain / 80);
+            const noisyGain = clampByte(gain + noise);
+            const value = 255 - noisyGain;
+            data[index] = value;
+            data[index + 1] = value;
+            data[index + 2] = value;
+            data[index + 3] = 255;
+        }
+    }
+}
+
+function noiseAt(x, y) {
+    let value = Math.imul(x ^ maskNoiseSeed, 374761393) + Math.imul(y, 668265263);
+    value = (value ^ (value >>> 13)) >>> 0;
+    value = Math.imul(value, 1274126177) >>> 0;
+    return ((value ^ (value >>> 16)) >>> 0) / 4294967295;
+}
+
+function applyMaskBilateralFilter(imageData, width, height) {
+    const strength = getQualityStrength('maskFilterStrength');
+    if (strength <= 0) return;
+
+    const data = imageData.data;
+    const pixelCount = width * height;
+    const source = new Uint8ClampedArray(pixelCount);
+    const output = new Uint8ClampedArray(pixelCount);
+    const radius = strength > 0.75 ? 3 : 2;
+    const sigmaSpatial = 0.9 + strength * 1.4;
+    const sigmaRange = 40 + strength * 90;
+    const blendStrength = Math.min(1, strength * 2);
+    const spatialWeights = [];
+    const rangeWeights = new Float32Array(256);
+
+    for (let index = 0, dataIndex = 0; index < pixelCount; index++, dataIndex += 4) {
+        source[index] = clampByte((data[dataIndex] + data[dataIndex + 1] + data[dataIndex + 2]) / 3);
+    }
+
+    for (let offsetY = -radius; offsetY <= radius; offsetY++) {
+        for (let offsetX = -radius; offsetX <= radius; offsetX++) {
+            spatialWeights.push({
+                offsetX,
+                offsetY,
+                weight: Math.exp(-(offsetX * offsetX + offsetY * offsetY) / (2 * sigmaSpatial * sigmaSpatial)),
+            });
+        }
+    }
+
+    for (let difference = 0; difference < rangeWeights.length; difference++) {
+        rangeWeights[difference] = Math.exp(-(difference * difference) / (2 * sigmaRange * sigmaRange));
+    }
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const centerIndex = y * width + x;
+            const centerValue = source[centerIndex];
+            let weightedTotal = 0;
+            let weightTotal = 0;
+
+            spatialWeights.forEach(({ offsetX, offsetY, weight }) => {
+                const sampleX = x + offsetX;
+                const sampleY = y + offsetY;
+                if (sampleX < 0 || sampleX >= width || sampleY < 0 || sampleY >= height) return;
+
+                const sampleValue = source[sampleY * width + sampleX];
+                const combinedWeight = weight * rangeWeights[Math.abs(sampleValue - centerValue)];
+                weightedTotal += sampleValue * combinedWeight;
+                weightTotal += combinedWeight;
+            });
+
+            output[centerIndex] = weightTotal > 0 ? clampByte(weightedTotal / weightTotal) : centerValue;
+        }
+    }
+
+    for (let index = 0, dataIndex = 0; index < pixelCount; index++, dataIndex += 4) {
+        const value = blendChannel(source[index], output[index], blendStrength);
+        data[dataIndex] = value;
+        data[dataIndex + 1] = value;
+        data[dataIndex + 2] = value;
+        data[dataIndex + 3] = 255;
+    }
+}
+
 // 创建遮罩Canvas
 function createMaskCanvas() {
     // 如果已存在，先移除
@@ -406,6 +840,7 @@ function createMaskCanvas() {
     // 填充白色背景
     maskCtx.fillStyle = 'white';
     maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+    markMaskQualityDirty();
 }
 
 function setAutoThresholdRange(minValue, maxValue, value) {
@@ -434,14 +869,23 @@ function clearAutoThresholdPreview(messageKey) {
     }
 }
 
-function analyzeImageBrightness(image) {
+function analyzeImageBrightness() {
+    if (!currentImage) {
+        return {
+            lowerBound: 0,
+            upperBound: 255,
+            defaultThreshold: 128,
+            mean: 128,
+        };
+    }
+
     const analysisCanvas = document.createElement('canvas');
     const analysisCtx = analysisCanvas.getContext('2d');
-    analysisCanvas.width = image.width;
-    analysisCanvas.height = image.height;
-    analysisCtx.drawImage(image, 0, 0);
+    analysisCanvas.width = currentImage.width;
+    analysisCanvas.height = currentImage.height;
+    drawSourceImage(analysisCtx, currentImage.width, currentImage.height);
 
-    const imageData = analysisCtx.getImageData(0, 0, image.width, image.height);
+    const imageData = analysisCtx.getImageData(0, 0, currentImage.width, currentImage.height);
     const data = imageData.data;
     const histogram = new Array(256).fill(0);
     let sum = 0;
@@ -525,7 +969,7 @@ function renderAutoThresholdPreview(requestToken) {
     sourceCanvas.width = previewWidth;
     sourceCanvas.height = previewHeight;
     sourceCtx.imageSmoothingEnabled = true;
-    sourceCtx.drawImage(currentImage, 0, 0, previewWidth, previewHeight);
+    drawSourceImage(sourceCtx, previewWidth, previewHeight);
 
     const imageData = sourceCtx.getImageData(0, 0, previewWidth, previewHeight);
     const data = imageData.data;
@@ -561,7 +1005,7 @@ function buildAutoMaskFromThreshold(threshold, brightAsMask) {
     const sourceCtx = sourceCanvas.getContext('2d');
     sourceCanvas.width = currentImage.width;
     sourceCanvas.height = currentImage.height;
-    sourceCtx.drawImage(currentImage, 0, 0);
+    drawSourceImage(sourceCtx, currentImage.width, currentImage.height);
 
     const imageData = sourceCtx.getImageData(0, 0, currentImage.width, currentImage.height);
     const data = imageData.data;
@@ -593,7 +1037,7 @@ function buildAutoMaskWithBrightPercentMapping(threshold) {
     const sourceCtx = sourceCanvas.getContext('2d');
     sourceCanvas.width = currentImage.width;
     sourceCanvas.height = currentImage.height;
-    sourceCtx.drawImage(currentImage, 0, 0);
+    drawSourceImage(sourceCtx, currentImage.width, currentImage.height);
 
     const imageData = sourceCtx.getImageData(0, 0, currentImage.width, currentImage.height);
     const data = imageData.data;
@@ -688,6 +1132,7 @@ function mergeAutoMaskOutput(autoMaskData) {
     }
 
     maskCtx.putImageData(currentMask, 0, 0);
+    markMaskQualityDirty();
 }
 
 function applyAutoMask(mode) {
@@ -741,6 +1186,7 @@ function restoreMask(imageData) {
     if (!maskCtx || !imageData) return;
 
     maskCtx.putImageData(imageData, 0, 0);
+    markMaskQualityDirty();
     updateCanvas();
     updateHistoryButtons();
 }
@@ -778,6 +1224,7 @@ function drawPoint(x, y) {
     maskCtx.arc(x, y, size / 2, 0, Math.PI * 2);
     maskCtx.fillStyle = color;
     maskCtx.fill();
+    markMaskQualityDirty();
 }
 
 function drawStrokeSegment(fromPoint, toPoint) {
@@ -809,6 +1256,7 @@ function drawStrokeSegment(fromPoint, toPoint) {
         maskCtx.arc(x, y, size / 2, 0, Math.PI * 2);
         maskCtx.fill();
     }
+    markMaskQualityDirty();
 }
 
 function updateCanvasToolCursor() {
@@ -916,7 +1364,7 @@ async function buildUltraHDRResult() {
     const originalCtx = originalCanvas.getContext('2d');
     originalCanvas.width = currentImage.width;
     originalCanvas.height = currentImage.height;
-    originalCtx.drawImage(currentImage, 0, 0);
+    drawSourceImage(originalCtx, currentImage.width, currentImage.height);
 
     const originalBlob = await canvasToBlob(originalCanvas, 'image/jpeg');
     const originalArray = new Uint8Array(await originalBlob.arrayBuffer());
@@ -928,9 +1376,10 @@ async function buildUltraHDRResult() {
 
     const tempMaskCanvas = document.createElement('canvas');
     const tempMaskCtx = tempMaskCanvas.getContext('2d');
-    tempMaskCanvas.width = maskCanvas.width;
-    tempMaskCanvas.height = maskCanvas.height;
-    tempMaskCtx.drawImage(maskCanvas, 0, 0);
+    const exportMaskCanvas = getProcessedMaskCanvas();
+    tempMaskCanvas.width = exportMaskCanvas.width;
+    tempMaskCanvas.height = exportMaskCanvas.height;
+    tempMaskCtx.drawImage(exportMaskCanvas, 0, 0);
 
     const maskImageData = tempMaskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
     const maskData = maskImageData.data;
@@ -1021,6 +1470,7 @@ function drawLine(fromPoint, toPoint) {
     maskCtx.moveTo(fromPoint.x, fromPoint.y);
     maskCtx.lineTo(toPoint.x, toPoint.y);
     maskCtx.stroke();
+    markMaskQualityDirty();
 }
 
 // 开始绘制
@@ -1102,6 +1552,10 @@ function stopDrawing(e) {
     if (e && e.pointerId !== undefined && canvas.hasPointerCapture && canvas.hasPointerCapture(e.pointerId)) {
         canvas.releasePointerCapture(e.pointerId);
     }
+
+    if (currentImage && maskCanvas && hasMaskQualitySettings()) {
+        updateCanvas();
+    }
 }
 
 // 更新Canvas显示
@@ -1112,12 +1566,12 @@ function updateCanvas() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     // 绘制原图
-    ctx.drawImage(currentImage, 0, 0, canvas.width, canvas.height);
+    drawSourceImage(ctx, canvas.width, canvas.height);
 
     // 再绘制黑白遮罩（使用混合模式）
     ctx.save();
     ctx.globalCompositeOperation = 'multiply';
-    ctx.drawImage(maskCanvas, 0, 0);
+    ctx.drawImage(isDrawing ? maskCanvas : getProcessedMaskCanvas(), 0, 0);
     ctx.restore();
 
     schedulePreviewUpdate();
@@ -1132,6 +1586,7 @@ function clearMask() {
     // 清除遮罩Canvas（填充白色）
     maskCtx.fillStyle = 'white';
     maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+    markMaskQualityDirty();
 
     // 更新主Canvas
     updateCanvas();
@@ -1209,6 +1664,8 @@ function resetImage() {
     currentImage = null;
     maskCanvas = null;
     maskCtx = null;
+    markSourceQualityDirty();
+    markMaskQualityDirty();
     undoStack = [];
     redoStack = [];
     isDrawing = false;

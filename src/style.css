@@ -215,6 +215,10 @@ canvas.tool-move.is-panning {
     grid-column: 1 / -1;
 }
 
+.quality-group {
+    grid-column: 1 / -1;
+}
+
 .auto-group input[type="range"] {
     width: 100%;
 }
@@ -253,6 +257,55 @@ canvas.tool-move.is-panning {
 .auto-action-buttons {
     margin-top: 10px;
     justify-content: flex-start;
+}
+
+.quality-options {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px;
+}
+
+.quality-option {
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid #dbe5ef;
+    border-radius: 6px;
+    background: #fff;
+}
+
+.quality-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 24px;
+    margin: 0;
+    padding: 0;
+    color: #23344d;
+    font-size: 14px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.quality-toggle input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    accent-color: #1565c0;
+}
+
+.quality-slider-label {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    margin: 8px 0 0;
+    color: #66758d;
+    font-size: 12px;
+    font-weight: bold;
+}
+
+.quality-option input[type="range"] {
+    width: 100%;
+    margin-top: 6px;
 }
 
 .zoom-actions {
