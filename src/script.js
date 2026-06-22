@@ -455,7 +455,7 @@ function buildAutoMaskFromThreshold(threshold, brightAsMask) {
         outputData[index + 3] = 255;
     }
 
-    maskCtx.putImageData(output, 0, 0);
+    mergeAutoMaskOutput(outputData);
     updateCanvas();
     schedulePreviewUpdate(true);
 }
@@ -505,7 +505,7 @@ function buildAutoMaskWithBrightPercentMapping(threshold) {
             outputData[index + 3] = 255;
         }
 
-        maskCtx.putImageData(output, 0, 0);
+        mergeAutoMaskOutput(outputData);
         updateCanvas();
         schedulePreviewUpdate(true);
         return;
@@ -540,9 +540,30 @@ function buildAutoMaskWithBrightPercentMapping(threshold) {
         outputData[dataIndex + 3] = 255;
     }
 
-    maskCtx.putImageData(output, 0, 0);
+    mergeAutoMaskOutput(outputData);
     updateCanvas();
     schedulePreviewUpdate(true);
+}
+
+function mergeAutoMaskOutput(autoMaskData) {
+    if (!maskCtx || !maskCanvas || !autoMaskData) return;
+
+    const currentMask = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+    const currentData = currentMask.data;
+
+    for (let index = 0; index < currentData.length; index += 4) {
+        const currentBrightness = 255 - currentData[index];
+        const autoBrightness = 255 - autoMaskData[index];
+        const mergedBrightness = Math.max(currentBrightness, autoBrightness);
+        const mergedValue = 255 - mergedBrightness;
+
+        currentData[index] = mergedValue;
+        currentData[index + 1] = mergedValue;
+        currentData[index + 2] = mergedValue;
+        currentData[index + 3] = 255;
+    }
+
+    maskCtx.putImageData(currentMask, 0, 0);
 }
 
 function applyAutoMask(mode) {
@@ -758,7 +779,7 @@ function triggerManualPreviewUpdate(force) {
 
 function canvasToBlob(canvasElement, type) {
     return new Promise(resolve => {
-        canvasElement.toBlob(blob => resolve(blob), type);
+        canvasElement.toBlob(blob => resolve(blob), type, 1.0);
     });
 }
 
