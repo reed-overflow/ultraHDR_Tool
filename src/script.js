@@ -92,6 +92,12 @@ let activePointerId = null;
 let isPanning = false;
 let panStart = null;
 let lastBrushPoint = null;
+let strokeBaseMaskData = null;
+let strokeCoverageCanvas = null;
+let strokeCoverageCtx = null;
+let strokeDirtyBounds = null;
+let strokeOpacity = 1;
+let strokeTool = 'brush';
 const qualitySettings = {
     imageDenoise: false,
     luminanceDenoise: false,
@@ -1180,6 +1186,7 @@ function pushHistory() {
 
     redoStack = [];
     updateHistoryButtons();
+    return snapshot;
 }
 
 function restoreMask(imageData) {
@@ -1213,12 +1220,98 @@ function getCanvasDisplayPoint(event) {
     };
 }
 
+function beginStrokeComposite(baseMaskData) {
+    if (!maskCanvas || !maskCtx) return;
+
+    strokeBaseMaskData = baseMaskData || maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+    strokeCoverageCanvas = document.createElement('canvas');
+    strokeCoverageCanvas.width = maskCanvas.width;
+    strokeCoverageCanvas.height = maskCanvas.height;
+    strokeCoverageCtx = strokeCoverageCanvas.getContext('2d');
+    strokeCoverageCtx.fillStyle = 'black';
+    strokeCoverageCtx.strokeStyle = 'black';
+    strokeCoverageCtx.lineCap = 'round';
+    strokeCoverageCtx.lineJoin = 'round';
+    strokeDirtyBounds = null;
+    strokeOpacity = parseInt(opacityInput.value, 10) / 100;
+    strokeTool = activeTool;
+}
+
+function endStrokeComposite() {
+    strokeBaseMaskData = null;
+    strokeCoverageCanvas = null;
+    strokeCoverageCtx = null;
+    strokeDirtyBounds = null;
+    strokeOpacity = 1;
+    strokeTool = 'brush';
+}
+
+function expandStrokeDirtyBounds(minX, minY, maxX, maxY) {
+    if (!maskCanvas) return;
+
+    const nextBounds = {
+        minX: Math.max(0, Math.floor(minX)),
+        minY: Math.max(0, Math.floor(minY)),
+        maxX: Math.min(maskCanvas.width, Math.ceil(maxX)),
+        maxY: Math.min(maskCanvas.height, Math.ceil(maxY)),
+    };
+
+    if (nextBounds.maxX <= nextBounds.minX || nextBounds.maxY <= nextBounds.minY) return;
+
+    strokeDirtyBounds = nextBounds;
+}
+
+function applyStrokeComposite() {
+    if (!strokeBaseMaskData || !strokeCoverageCtx || !strokeDirtyBounds || !maskCtx || !maskCanvas) return;
+
+    const x = strokeDirtyBounds.minX;
+    const y = strokeDirtyBounds.minY;
+    const width = strokeDirtyBounds.maxX - strokeDirtyBounds.minX;
+    const height = strokeDirtyBounds.maxY - strokeDirtyBounds.minY;
+    if (width <= 0 || height <= 0) return;
+
+    const coverageData = strokeCoverageCtx.getImageData(x, y, width, height).data;
+    const output = maskCtx.createImageData(width, height);
+    const outputData = output.data;
+    const baseData = strokeBaseMaskData.data;
+    const targetValue = strokeTool === 'eraser' ? 255 : 0;
+
+    for (let row = 0; row < height; row++) {
+        for (let column = 0; column < width; column++) {
+            const localIndex = (row * width + column) * 4;
+            const coverage = coverageData[localIndex + 3] / 255;
+            const effectiveOpacity = coverage * strokeOpacity;
+            const baseIndex = ((y + row) * maskCanvas.width + x + column) * 4;
+            const baseGray = (baseData[baseIndex] + baseData[baseIndex + 1] + baseData[baseIndex + 2]) / 3;
+            const value = clampByte(baseGray * (1 - effectiveOpacity) + targetValue * effectiveOpacity);
+
+            outputData[localIndex] = value;
+            outputData[localIndex + 1] = value;
+            outputData[localIndex + 2] = value;
+            outputData[localIndex + 3] = 255;
+        }
+    }
+
+    maskCtx.putImageData(output, x, y);
+    markMaskQualityDirty();
+}
+
 function drawPoint(x, y) {
     const size = parseInt(brushSizeInput.value, 10);
     const opacity = parseInt(opacityInput.value, 10) / 100;
     const color = activeTool === 'eraser'
         ? 'rgba(255, 255, 255, ' + opacity + ')'
         : 'rgba(0, 0, 0, ' + opacity + ')';
+
+    if (strokeCoverageCtx) {
+        const radius = size / 2;
+        strokeCoverageCtx.beginPath();
+        strokeCoverageCtx.arc(x, y, radius, 0, Math.PI * 2);
+        strokeCoverageCtx.fill();
+        expandStrokeDirtyBounds(x - radius - 2, y - radius - 2, x + radius + 2, y + radius + 2);
+        applyStrokeComposite();
+        return;
+    }
 
     maskCtx.beginPath();
     maskCtx.arc(x, y, size / 2, 0, Math.PI * 2);
@@ -1234,9 +1327,24 @@ function drawStrokeSegment(fromPoint, toPoint) {
         ? 'rgba(255, 255, 255, ' + opacity + ')'
         : 'rgba(0, 0, 0, ' + opacity + ')';
 
-    const distance = Math.max(1, Math.hypot(toPoint.x - fromPoint.x, toPoint.y - fromPoint.y));
-    const step = Math.max(0.5, size / 4);
-    const steps = Math.ceil(distance / step);
+    if (strokeCoverageCtx) {
+        const radius = size / 2;
+        strokeCoverageCtx.lineCap = 'round';
+        strokeCoverageCtx.lineJoin = 'round';
+        strokeCoverageCtx.lineWidth = size;
+        strokeCoverageCtx.beginPath();
+        strokeCoverageCtx.moveTo(fromPoint.x, fromPoint.y);
+        strokeCoverageCtx.lineTo(toPoint.x, toPoint.y);
+        strokeCoverageCtx.stroke();
+        expandStrokeDirtyBounds(
+            Math.min(fromPoint.x, toPoint.x) - radius - 2,
+            Math.min(fromPoint.y, toPoint.y) - radius - 2,
+            Math.max(fromPoint.x, toPoint.x) + radius + 2,
+            Math.max(fromPoint.y, toPoint.y) + radius + 2
+        );
+        applyStrokeComposite();
+        return;
+    }
 
     maskCtx.fillStyle = color;
     maskCtx.strokeStyle = color;
@@ -1247,15 +1355,6 @@ function drawStrokeSegment(fromPoint, toPoint) {
     maskCtx.moveTo(fromPoint.x, fromPoint.y);
     maskCtx.lineTo(toPoint.x, toPoint.y);
     maskCtx.stroke();
-
-    for (let index = 1; index <= steps; index++) {
-        const t = index / steps;
-        const x = fromPoint.x + (toPoint.x - fromPoint.x) * t;
-        const y = fromPoint.y + (toPoint.y - fromPoint.y) * t;
-        maskCtx.beginPath();
-        maskCtx.arc(x, y, size / 2, 0, Math.PI * 2);
-        maskCtx.fill();
-    }
     markMaskQualityDirty();
 }
 
@@ -1495,7 +1594,8 @@ function startDrawing(e) {
 
     isDrawing = true;
     canvas.setPointerCapture(e.pointerId);
-    pushHistory();
+    const baseMaskData = pushHistory();
+    beginStrokeComposite(baseMaskData);
 
     const point = getCanvasDisplayPoint(e);
     const imagePoint = { x: point.imageX, y: point.imageY };
@@ -1526,7 +1626,6 @@ function draw(e) {
     const lastPoint = lastBrushPoint || currentPoint;
 
     drawStrokeSegment(lastPoint, currentPoint);
-    drawPoint(currentPoint.x, currentPoint.y);
     canvas.lastPoint = currentPoint;
     lastBrushPoint = currentPoint;
 
@@ -1536,6 +1635,7 @@ function draw(e) {
 
 // 停止绘制
 function stopDrawing(e) {
+    const wasDrawing = isDrawing;
     isDrawing = false;
     canvas.lastPoint = null;
     lastBrushPoint = null;
@@ -1551,6 +1651,10 @@ function stopDrawing(e) {
 
     if (e && e.pointerId !== undefined && canvas.hasPointerCapture && canvas.hasPointerCapture(e.pointerId)) {
         canvas.releasePointerCapture(e.pointerId);
+    }
+
+    if (wasDrawing) {
+        endStrokeComposite();
     }
 
     if (currentImage && maskCanvas && hasMaskQualitySettings()) {
@@ -1670,6 +1774,7 @@ function resetImage() {
     redoStack = [];
     isDrawing = false;
     canvas.lastPoint = null;
+    endStrokeComposite();
     setActiveTool('brush');
     zoomLevel = 1;
     zoomLevelInput.value = '100';
